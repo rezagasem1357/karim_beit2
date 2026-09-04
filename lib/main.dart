@@ -149,8 +149,11 @@ Future<pw.Font> _loadFont() async {
 }
 
 String _pdfText(String value) {
-  final cleaned =
-      value.replaceAll(RegExp(r'[📦📅📋💰🛒📊💳📌🚚🧾👤🛍️📄]'), '').trim();
+  // ایموجی‌ها در فونت‌های معمول PDF پشتیبانی نمی‌شوند و به صورت مربع نمایش داده می‌شوند.
+  final cleaned = value
+      .replaceAll(RegExp(r'[\u{1F000}-\u{1FAFF}\u{1FC00}-\u{1FFFD}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]', unicode: true), '')
+      .replaceAll(RegExp(r'\s{2,}'), ' ')
+      .trim();
   return ArabicReshaper.instance.reshape(cleaned);
 }
 
@@ -164,7 +167,7 @@ pw.Widget _pdfTextWidget(
 }) {
   return pw.Text(
     _pdfText(value),
-    textDirection: pw.TextDirection.rtl,
+    textDirection: pw.TextDirection.ltr,
     textAlign: textAlign,
     style: pw.TextStyle(
       font: font,
@@ -626,6 +629,7 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
   List<ProductDatabaseItem> _productDatabase = [];
   List<SalesInvoice> _salesInvoices = [];
   List<TrashItem> _trashItems = [];
+  List<DailyExpense> _dailyExpenses = [];
 
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _quantityController = TextEditingController();
@@ -657,6 +661,7 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
     _loadProductDatabase();
     _loadSalesInvoices();
     _loadTrashAndCleanup();
+    _loadDailyExpenses();
     _loadSettings();
   }
 
@@ -675,6 +680,45 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
   // ==================== تابع بستن کیبورد ====================
   void _closeKeyboard() {
     FocusScope.of(context).unfocus();
+  }
+
+  Future<void> _loadDailyExpenses() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString('daily_expenses');
+    if (raw == null || raw.isEmpty) return;
+    try {
+      final decoded = jsonDecode(raw) as List;
+      if (!mounted) return;
+      setState(() {
+        _dailyExpenses = decoded
+            .map((e) => DailyExpense.fromJson(Map<String, dynamic>.from(e)))
+            .toList();
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _saveDailyExpenses() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      'daily_expenses',
+      jsonEncode(_dailyExpenses.map((e) => e.toJson()).toList()),
+    );
+  }
+
+  void _openDailyExpensesScreen() {
+    _closeKeyboard();
+    Navigator.push(
+      context,
+      _slideRoute(
+        DailyExpensesScreen(
+          expenses: _dailyExpenses,
+          onChanged: (updated) {
+            setState(() => _dailyExpenses = List<DailyExpense>.from(updated));
+            _saveDailyExpenses();
+          },
+        ),
+      ),
+    );
   }
 
   Future<void> _loadSettings() async {
@@ -714,13 +758,10 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
       return Expanded(
         child: Container(
           margin: const EdgeInsets.symmetric(horizontal: 3),
-          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 9),
+          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 8),
           decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.surface,
+            color: Colors.white.withOpacity(.92),
             borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-              color: Theme.of(context).colorScheme.outlineVariant,
-            ),
           ),
           child: Column(
             children: [
@@ -729,11 +770,11 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   color: Colors.red,
-                  fontSize: 11,
+                  fontSize: 10.5,
                   fontWeight: FontWeight.bold,
                 ),
               ),
-              const SizedBox(height: 5),
+              const SizedBox(height: 4),
               Text(
                 value,
                 textAlign: TextAlign.center,
@@ -741,7 +782,7 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
                   color: Colors.black,
-                  fontSize: 12,
+                  fontSize: 11.5,
                   fontWeight: FontWeight.w800,
                 ),
               ),
@@ -751,23 +792,12 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
       );
     }
 
-    return Container(
-      margin: const EdgeInsets.only(top: 12),
-      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 7),
-      decoration: BoxDecoration(
-        color: Theme.of(context).colorScheme.surfaceContainerHighest,
-        borderRadius: BorderRadius.circular(18),
-      ),
-      child: Row(
-        children: [
-          stat(title: 'تعداد اقلام', value: _toPersianDigits(itemCount.toString())),
-          stat(title: 'کل موجودی کالا', value: _toPersianDigits(totalStock.toString())),
-          stat(
-            title: 'فروش امروز',
-            value: '${_formatPrice(todaySales)} ریال',
-          ),
-        ],
-      ),
+    return Row(
+      children: [
+        stat(title: 'تعداد اقلام', value: _toPersianDigits(itemCount.toString())),
+        stat(title: 'کل موجودی کالا', value: _toPersianDigits(totalStock.toString())),
+        stat(title: 'فروش امروز', value: '${_formatPrice(todaySales)} ریال'),
+      ],
     );
   }
 
@@ -1150,7 +1180,7 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
         pw.MultiPage(
           pageFormat: PdfPageFormat.a4,
           margin: const pw.EdgeInsets.fromLTRB(28, 30, 28, 30),
-          textDirection: pw.TextDirection.rtl,
+          textDirection: pw.TextDirection.ltr,
           maxPages: 100,
           header: (context) => pw.Align(
             alignment: pw.Alignment.centerRight,
@@ -3715,63 +3745,71 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                   ),
                 ],
               ),
-              child: Row(
+              child: Column(
                 children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 65,
+                        height: 65,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: Colors.white.withOpacity(0.5),
+                            width: 2,
+                          ),
+                          image: const DecorationImage(
+                            image: AssetImage(
+                                'assets/images/Logopit_1787568628075.png'),
+                            fit: BoxFit.cover,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '$greeting ${_userName.isEmpty ? 'کاربر عزیز' : _userName}',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 18,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              dateText,
+                              style: TextStyle(
+                                color: Colors.white.withOpacity(.90),
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              'مدیریت فروش، بارنامه و موجودی',
+                              style: TextStyle(
+                                color: Colors.white.withOpacity(.75),
+                                fontSize: 11,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
                   Container(
-                    width: 65,
-                    height: 65,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(
-                        color: Colors.white.withOpacity(0.5),
-                        width: 2,
-                      ),
-                      image: const DecorationImage(
-                        image: AssetImage(
-                            'assets/images/Logopit_1787568628075.png'),
-                        fit: BoxFit.cover,
-                      ),
-                    ),
+                    height: 1,
+                    color: Colors.white.withOpacity(.22),
                   ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          '$greeting ${_userName.isEmpty ? 'کاربر عزیز' : _userName}',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          dateText,
-                          style: TextStyle(
-                            color: Colors.white.withOpacity(.90),
-                            fontSize: 13,
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          'مدیریت فروش، بارنامه و موجودی',
-                          style: TextStyle(
-                            color: Colors.white.withOpacity(.75),
-                            fontSize: 11,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
+                  const SizedBox(height: 10),
+                  _buildLiveStats(),
                 ],
               ),
             ),
-
-            // ==================== آمار لحظه‌ای ====================
-            _buildLiveStats(),
 
             const SizedBox(height: 10),
 
@@ -3947,6 +3985,13 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                     subtitle: 'پروفایل و ظاهر',
                     iconColor: Colors.grey,
                     onTap: _openSettingsScreen,
+                  ),
+                  _buildToolCard(
+                    icon: Icons.payments_outlined,
+                    title: 'هزینه‌های روزانه',
+                    subtitle: 'ثبت و مدیریت هزینه‌ها',
+                    iconColor: Colors.redAccent,
+                    onTap: _openDailyExpensesScreen,
                   ),
                 ],
               ),
@@ -5067,7 +5112,7 @@ class _ManifestScreenState extends State<ManifestScreen> {
         pw.MultiPage(
           pageFormat: PdfPageFormat.a4,
           margin: const pw.EdgeInsets.fromLTRB(28, 30, 28, 30),
-          textDirection: pw.TextDirection.rtl,
+          textDirection: pw.TextDirection.ltr,
           maxPages: 500,
           header: (context) => pw.Align(
               alignment: pw.Alignment.centerRight,
@@ -5161,6 +5206,224 @@ class _ManifestScreenState extends State<ManifestScreen> {
 
 // ==================== ادامه کد (SalesInvoicesScreen, SettingsScreen, ProductDatabaseScreen, BarcodeScannerScreen و مدل‌ها) در پاسخ بعدی ====================
 // ==================== صفحه فاکتورهای فروش ====================
+
+class DailyExpensesScreen extends StatefulWidget {
+  final List<DailyExpense> expenses;
+  final ValueChanged<List<DailyExpense>> onChanged;
+
+  const DailyExpensesScreen({
+    super.key,
+    required this.expenses,
+    required this.onChanged,
+  });
+
+  @override
+  State<DailyExpensesScreen> createState() => _DailyExpensesScreenState();
+}
+
+class _DailyExpensesScreenState extends State<DailyExpensesScreen> {
+  late List<DailyExpense> _expenses;
+  final TextEditingController _titleController = TextEditingController();
+  final TextEditingController _amountController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _expenses = List<DailyExpense>.from(widget.expenses);
+  }
+
+  @override
+  void dispose() {
+    _titleController.dispose();
+    _amountController.dispose();
+    super.dispose();
+  }
+
+  String _formatAmount(int amount) => _toPersianDigits(
+        amount.toString().replaceAllMapped(
+          RegExp(r'(\d)(?=(\d{3})+(?!\d))'),
+          (m) => '${m[1]},',
+        ),
+      );
+
+  Future<void> _addExpense() async {
+    _titleController.clear();
+    _amountController.clear();
+    final result = await showDialog<DailyExpense>(
+      context: context,
+      builder: (dialogContext) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          title: const Text('ثبت هزینه روزانه'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: _titleController,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: 'نام هزینه',
+                  hintText: 'مثلاً کرایه، برق، خرید لوازم...',
+                  prefixIcon: Icon(Icons.edit_note),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _amountController,
+                keyboardType: TextInputType.number,
+                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                decoration: const InputDecoration(
+                  labelText: 'مبلغ هزینه (ریال)',
+                  hintText: 'مبلغ را وارد کنید',
+                  prefixIcon: Icon(Icons.payments_outlined),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('انصراف'),
+            ),
+            FilledButton.icon(
+              onPressed: () {
+                final title = _titleController.text.trim();
+                final amount = int.tryParse(_amountController.text.trim()) ?? 0;
+                if (title.isEmpty || amount <= 0) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('نام هزینه و مبلغ معتبر را وارد کنید')),
+                  );
+                  return;
+                }
+                final now = DateTime.now();
+                Navigator.pop(
+                  dialogContext,
+                  DailyExpense(
+                    id: '${now.microsecondsSinceEpoch}',
+                    title: title,
+                    amount: amount,
+                    date: _todayJalali(),
+                    createdAt: now.toIso8601String(),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.check),
+              label: const Text('ثبت هزینه'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (result == null) return;
+    setState(() => _expenses.insert(0, result));
+    widget.onChanged(List<DailyExpense>.from(_expenses));
+  }
+
+  Future<void> _deleteExpense(DailyExpense expense) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => Directionality(
+        textDirection: TextDirection.rtl,
+        child: AlertDialog(
+          title: const Text('حذف هزینه'),
+          content: Text('هزینه «${expense.title}» حذف شود؟'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('انصراف')),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('حذف'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (ok != true) return;
+    setState(() => _expenses.removeWhere((e) => e.id == expense.id));
+    widget.onChanged(List<DailyExpense>.from(_expenses));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final total = _expenses.fold<int>(0, (sum, e) => sum + e.amount);
+    return Directionality(
+      textDirection: TextDirection.rtl,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('هزینه‌های روزانه'),
+          backgroundColor: Colors.green.shade700,
+          foregroundColor: Colors.white,
+        ),
+        body: Column(
+          children: [
+            Container(
+              margin: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(18),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.account_balance_wallet_outlined, color: Colors.redAccent, size: 30),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Text('جمع کل هزینه‌ها', style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                  Text(
+                    '${_formatAmount(total)} ریال',
+                    style: const TextStyle(fontWeight: FontWeight.w900, color: Colors.redAccent),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: _expenses.isEmpty
+                  ? const Center(
+                      child: Text('هنوز هزینه‌ای ثبت نشده است.\nبا دکمه + اولین هزینه را ثبت کنید.', textAlign: TextAlign.center),
+                    )
+                  : ListView.separated(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 90),
+                      itemCount: _expenses.length,
+                      separatorBuilder: (_, __) => const SizedBox(height: 8),
+                      itemBuilder: (context, index) {
+                        final expense = _expenses[index];
+                        return Card(
+                          child: ListTile(
+                            leading: CircleAvatar(
+                              backgroundColor: Colors.redAccent.withOpacity(.12),
+                              child: const Icon(Icons.payments_outlined, color: Colors.redAccent),
+                            ),
+                            title: Text(expense.title, style: const TextStyle(fontWeight: FontWeight.bold)),
+                            subtitle: Text('تاریخ: ${expense.date}'),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text('${_formatAmount(expense.amount)} ریال', style: const TextStyle(fontWeight: FontWeight.w800)),
+                                IconButton(
+                                  icon: const Icon(Icons.delete_outline, color: Colors.red),
+                                  onPressed: () => _deleteExpense(expense),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+        floatingActionButton: FloatingActionButton.extended(
+          onPressed: _addExpense,
+          icon: const Icon(Icons.add),
+          label: const Text('ثبت هزینه'),
+          backgroundColor: Colors.green.shade700,
+          foregroundColor: Colors.white,
+        ),
+      ),
+    );
+  }
+}
 
 class SalesInvoicesScreen extends StatefulWidget {
   final List<SalesInvoice> invoices;
@@ -5573,7 +5836,7 @@ class _SalesInvoicesScreenState extends State<SalesInvoicesScreen> {
       }) {
         return pw.Text(
           text,
-          textDirection: pw.TextDirection.rtl,
+          textDirection: pw.TextDirection.ltr,
           textAlign: align,
           style: pw.TextStyle(
             font: font,
@@ -6982,6 +7245,38 @@ class _BarcodeScannerScreenState extends State<BarcodeScannerScreen> {
 }
 
 // ==================== مدل‌های داده ====================
+
+class DailyExpense {
+  final String id;
+  final String title;
+  final int amount;
+  final String date;
+  final String createdAt;
+
+  DailyExpense({
+    required this.id,
+    required this.title,
+    required this.amount,
+    required this.date,
+    required this.createdAt,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'title': title,
+        'amount': amount,
+        'date': date,
+        'createdAt': createdAt,
+      };
+
+  factory DailyExpense.fromJson(Map<String, dynamic> json) => DailyExpense(
+        id: json['id']?.toString() ?? '',
+        title: json['title']?.toString() ?? '',
+        amount: int.tryParse(json['amount']?.toString() ?? '') ?? 0,
+        date: json['date']?.toString() ?? '',
+        createdAt: json['createdAt']?.toString() ?? '',
+      );
+}
 
 class TrashItem {
   final String id;
