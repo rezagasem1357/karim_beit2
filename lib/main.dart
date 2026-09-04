@@ -149,11 +149,8 @@ Future<pw.Font> _loadFont() async {
 }
 
 String _pdfText(String value) {
-  // ایموجی‌ها در فونت‌های معمول PDF پشتیبانی نمی‌شوند و به صورت مربع نمایش داده می‌شوند.
-  final cleaned = value
-      .replaceAll(RegExp(r'[\u{1F000}-\u{1FAFF}\u{1FC00}-\u{1FFFD}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]', unicode: true), '')
-      .replaceAll(RegExp(r'\s{2,}'), ' ')
-      .trim();
+  final cleaned =
+      value.replaceAll(RegExp(r'[📦📅📋💰🛒📊💳📌🚚🧾👤🛍️📄]'), '').trim();
   return ArabicReshaper.instance.reshape(cleaned);
 }
 
@@ -167,7 +164,7 @@ pw.Widget _pdfTextWidget(
 }) {
   return pw.Text(
     _pdfText(value),
-    textDirection: pw.TextDirection.ltr,
+    textDirection: pw.TextDirection.rtl,
     textAlign: textAlign,
     style: pw.TextStyle(
       font: font,
@@ -629,7 +626,9 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
   List<ProductDatabaseItem> _productDatabase = [];
   List<SalesInvoice> _salesInvoices = [];
   List<TrashItem> _trashItems = [];
-  List<DailyExpense> _dailyExpenses = [];
+  List<InventoryCountEntry> _inventoryCounts = [];
+  final PageController _toolsPageController = PageController();
+  int _toolsPage = 0;
 
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _quantityController = TextEditingController();
@@ -661,7 +660,7 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
     _loadProductDatabase();
     _loadSalesInvoices();
     _loadTrashAndCleanup();
-    _loadDailyExpenses();
+    _loadInventoryCounts();
     _loadSettings();
   }
 
@@ -674,51 +673,13 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
     _barcodeController.dispose();
     _packageSizeController.dispose();
     _searchFocusNode.dispose();
+    _toolsPageController.dispose();
     super.dispose();
   }
 
   // ==================== تابع بستن کیبورد ====================
   void _closeKeyboard() {
     FocusScope.of(context).unfocus();
-  }
-
-  Future<void> _loadDailyExpenses() async {
-    final prefs = await SharedPreferences.getInstance();
-    final raw = prefs.getString('daily_expenses');
-    if (raw == null || raw.isEmpty) return;
-    try {
-      final decoded = jsonDecode(raw) as List;
-      if (!mounted) return;
-      setState(() {
-        _dailyExpenses = decoded
-            .map((e) => DailyExpense.fromJson(Map<String, dynamic>.from(e)))
-            .toList();
-      });
-    } catch (_) {}
-  }
-
-  Future<void> _saveDailyExpenses() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-      'daily_expenses',
-      jsonEncode(_dailyExpenses.map((e) => e.toJson()).toList()),
-    );
-  }
-
-  void _openDailyExpensesScreen() {
-    _closeKeyboard();
-    Navigator.push(
-      context,
-      _slideRoute(
-        DailyExpensesScreen(
-          expenses: _dailyExpenses,
-          onChanged: (updated) {
-            setState(() => _dailyExpenses = List<DailyExpense>.from(updated));
-            _saveDailyExpenses();
-          },
-        ),
-      ),
-    );
   }
 
   Future<void> _loadSettings() async {
@@ -758,10 +719,13 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
       return Expanded(
         child: Container(
           margin: const EdgeInsets.symmetric(horizontal: 3),
-          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 9),
           decoration: BoxDecoration(
-            color: Colors.white.withOpacity(.92),
+            color: Theme.of(context).colorScheme.surface,
             borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: Theme.of(context).colorScheme.outlineVariant,
+            ),
           ),
           child: Column(
             children: [
@@ -770,11 +734,11 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   color: Colors.red,
-                  fontSize: 10.5,
+                  fontSize: 11,
                   fontWeight: FontWeight.bold,
                 ),
               ),
-              const SizedBox(height: 4),
+              const SizedBox(height: 5),
               Text(
                 value,
                 textAlign: TextAlign.center,
@@ -782,7 +746,7 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                 overflow: TextOverflow.ellipsis,
                 style: const TextStyle(
                   color: Colors.black,
-                  fontSize: 11.5,
+                  fontSize: 12,
                   fontWeight: FontWeight.w800,
                 ),
               ),
@@ -792,18 +756,34 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
       );
     }
 
-    return Row(
-      children: [
-        stat(title: 'تعداد اقلام', value: _toPersianDigits(itemCount.toString())),
-        stat(title: 'کل موجودی کالا', value: _toPersianDigits(totalStock.toString())),
-        stat(title: 'فروش امروز', value: '${_formatPrice(todaySales)} ریال'),
-      ],
+    return Container(
+      margin: const EdgeInsets.only(top: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 7),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Row(
+        children: [
+          stat(
+              title: 'تعداد اقلام',
+              value: _toPersianDigits(itemCount.toString())),
+          stat(
+              title: 'کل موجودی کالا',
+              value: _toPersianDigits(totalStock.toString())),
+          stat(
+            title: 'فروش امروز',
+            value: '${_formatPrice(todaySales)} ریال',
+          ),
+        ],
+      ),
     );
   }
 
   Future<void> _contactSupport() async {
     _closeKeyboard();
-    final subject = Uri.encodeComponent('ارتباط با پشتیبانی دستیار هوشمند فروشگاه');
+    final subject =
+        Uri.encodeComponent('ارتباط با پشتیبانی دستیار هوشمند فروشگاه');
     final body = Uri.encodeComponent(
       'سلام،\n\nپیام من درباره برنامه دستیار هوشمند فروشگاه:\n\n',
     );
@@ -1180,7 +1160,7 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
         pw.MultiPage(
           pageFormat: PdfPageFormat.a4,
           margin: const pw.EdgeInsets.fromLTRB(28, 30, 28, 30),
-          textDirection: pw.TextDirection.ltr,
+          textDirection: pw.TextDirection.rtl,
           maxPages: 100,
           header: (context) => pw.Align(
             alignment: pw.Alignment.centerRight,
@@ -1895,6 +1875,46 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
     await prefs.setString('sales_invoices', jsonEncode(dataJson));
   }
 
+  Future<void> _loadInventoryCounts() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString('inventory_counts');
+    if (raw == null || raw.isEmpty) return;
+    try {
+      final decoded = jsonDecode(raw) as List;
+      final items = decoded
+          .map(
+              (e) => InventoryCountEntry.fromJson(Map<String, dynamic>.from(e)))
+          .toList();
+      if (mounted) setState(() => _inventoryCounts = items);
+    } catch (_) {}
+  }
+
+  Future<void> _saveInventoryCounts() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      'inventory_counts',
+      jsonEncode(_inventoryCounts.map((e) => e.toJson()).toList()),
+    );
+  }
+
+  Future<void> _openInventoryCountScreen() async {
+    _closeKeyboard();
+    await Navigator.push(
+      context,
+      _slideRoute(
+        InventoryCountScreen(
+          products: List<ProductDatabaseItem>.from(_productDatabase),
+          entries: List<InventoryCountEntry>.from(_inventoryCounts),
+          onChanged: (updated) async {
+            setState(() => _inventoryCounts = updated);
+            await _saveInventoryCounts();
+          },
+        ),
+      ),
+    );
+    await _loadInventoryCounts();
+  }
+
   Future<void> _loadTrashAndCleanup() async {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString('trash_items');
@@ -1967,7 +1987,8 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
               (requiredByBarcode[inv.barcode] ?? 0) + inv.quantity;
         }
         for (final entry in requiredByBarcode.entries) {
-          final idx = _productDatabase.indexWhere((p) => p.barcode == entry.key);
+          final idx =
+              _productDatabase.indexWhere((p) => p.barcode == entry.key);
           if (idx == -1 || _productDatabase[idx].stock < entry.value) {
             return false;
           }
@@ -1977,9 +1998,8 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
         final numberConflict = _salesInvoices.any(
           (x) => x.number == originalNumber && !activeIds.contains(x.id),
         );
-        final restoreNumber = numberConflict
-            ? _getNextInvoiceNumber()
-            : originalNumber;
+        final restoreNumber =
+            numberConflict ? _getNextInvoiceNumber() : originalNumber;
 
         for (final inv in invoices) {
           final restored = inv.number == restoreNumber
@@ -1989,7 +2009,8 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
         }
 
         for (final entry in requiredByBarcode.entries) {
-          final idx = _productDatabase.indexWhere((p) => p.barcode == entry.key);
+          final idx =
+              _productDatabase.indexWhere((p) => p.barcode == entry.key);
           if (idx == -1) continue;
           final p = _productDatabase[idx];
           _productDatabase[idx] = ProductDatabaseItem(
@@ -3745,71 +3766,63 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                   ),
                 ],
               ),
-              child: Column(
+              child: Row(
                 children: [
-                  Row(
-                    children: [
-                      Container(
-                        width: 65,
-                        height: 65,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          border: Border.all(
-                            color: Colors.white.withOpacity(0.5),
-                            width: 2,
-                          ),
-                          image: const DecorationImage(
-                            image: AssetImage(
-                                'assets/images/Logopit_1787568628075.png'),
-                            fit: BoxFit.cover,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              '$greeting ${_userName.isEmpty ? 'کاربر عزیز' : _userName}',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 18,
-                                fontWeight: FontWeight.w800,
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              dateText,
-                              style: TextStyle(
-                                color: Colors.white.withOpacity(.90),
-                                fontSize: 13,
-                                fontWeight: FontWeight.w500,
-                              ),
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              'مدیریت فروش، بارنامه و موجودی',
-                              style: TextStyle(
-                                color: Colors.white.withOpacity(.75),
-                                fontSize: 11,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
                   Container(
-                    height: 1,
-                    color: Colors.white.withOpacity(.22),
+                    width: 65,
+                    height: 65,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: Colors.white.withOpacity(0.5),
+                        width: 2,
+                      ),
+                      image: const DecorationImage(
+                        image: AssetImage(
+                            'assets/images/Logopit_1787568628075.png'),
+                        fit: BoxFit.cover,
+                      ),
+                    ),
                   ),
-                  const SizedBox(height: 10),
-                  _buildLiveStats(),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '$greeting ${_userName.isEmpty ? 'کاربر عزیز' : _userName}',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 18,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          dateText,
+                          style: TextStyle(
+                            color: Colors.white.withOpacity(.90),
+                            fontSize: 13,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          'مدیریت فروش، بارنامه و موجودی',
+                          style: TextStyle(
+                            color: Colors.white.withOpacity(.75),
+                            fontSize: 11,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ],
               ),
             ),
+
+            // ==================== آمار لحظه‌ای ====================
+            _buildLiveStats(),
 
             const SizedBox(height: 10),
 
@@ -3943,57 +3956,94 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                 style: TextStyle(fontSize: 19, fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 10),
-              GridView.count(
-                crossAxisCount: 2,
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                mainAxisSpacing: 10,
-                crossAxisSpacing: 10,
-                childAspectRatio: 1.65,
-                children: [
-                  _buildToolCard(
-                    icon: Icons.local_shipping_outlined,
-                    title: 'بارنامه',
-                    subtitle: 'ثبت و مدیریت بار',
-                    iconColor: Colors.blue,
-                    onTap: _openManifestScreen,
+              SizedBox(
+                height: 214,
+                child: PageView.builder(
+                  controller: _toolsPageController,
+                  itemCount: 2,
+                  onPageChanged: (index) {
+                    setState(() => _toolsPage = index);
+                  },
+                  itemBuilder: (context, pageIndex) {
+                    final allTools = <Widget>[
+                      _buildToolCard(
+                        icon: Icons.local_shipping_outlined,
+                        title: 'بارنامه',
+                        subtitle: 'ثبت و مدیریت بار',
+                        iconColor: Colors.blue,
+                        onTap: _openManifestScreen,
+                      ),
+                      _buildToolCard(
+                        icon: Icons.receipt_long_outlined,
+                        title: 'فروش',
+                        subtitle: 'فاکتورهای فروش',
+                        iconColor: Colors.green,
+                        onTap: _openSalesInvoicesScreen,
+                      ),
+                      _buildToolCard(
+                        icon: Icons.inventory_2_outlined,
+                        title: 'بانک اطلاعاتی',
+                        subtitle: 'کالاها و پوشه‌ها',
+                        iconColor: Colors.deepPurple,
+                        onTap: _openProductDatabaseScreen,
+                      ),
+                      _buildToolCard(
+                        icon: Icons.share_outlined,
+                        title: 'اشتراک گزارش',
+                        subtitle: 'گزارش فروش و بارنامه',
+                        iconColor: Colors.orange,
+                        onTap: _shareSalesReport,
+                      ),
+                      _buildToolCard(
+                        icon: Icons.settings_outlined,
+                        title: 'تنظیمات',
+                        subtitle: 'پروفایل و ظاهر',
+                        iconColor: Colors.grey,
+                        onTap: _openSettingsScreen,
+                      ),
+                      _buildToolCard(
+                        icon: Icons.fact_check_outlined,
+                        title: 'انبارگردانی',
+                        subtitle: 'مغایرت موجودی کالاها',
+                        iconColor: Colors.teal,
+                        onTap: _openInventoryCountScreen,
+                      ),
+                    ];
+                    final pageTools =
+                        allTools.skip(pageIndex * 4).take(4).toList();
+                    while (pageTools.length < 4) {
+                      pageTools.add(const SizedBox.shrink());
+                    }
+                    return GridView.count(
+                      crossAxisCount: 2,
+                      physics: const NeverScrollableScrollPhysics(),
+                      padding: EdgeInsets.zero,
+                      mainAxisSpacing: 10,
+                      crossAxisSpacing: 10,
+                      childAspectRatio: 1.65,
+                      children: pageTools,
+                    );
+                  },
+                ),
+              ),
+              const SizedBox(height: 8),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: List.generate(
+                  2,
+                  (index) => AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    margin: const EdgeInsets.symmetric(horizontal: 3),
+                    width: _toolsPage == index ? 18 : 7,
+                    height: 7,
+                    decoration: BoxDecoration(
+                      color: _toolsPage == index
+                          ? Colors.green.shade700
+                          : Colors.grey.shade400,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
                   ),
-                  _buildToolCard(
-                    icon: Icons.receipt_long_outlined,
-                    title: 'فروش',
-                    subtitle: 'فاکتورهای فروش',
-                    iconColor: Colors.green,
-                    onTap: _openSalesInvoicesScreen,
-                  ),
-                  _buildToolCard(
-                    icon: Icons.inventory_2_outlined,
-                    title: 'بانک اطلاعاتی',
-                    subtitle: 'کالاها و پوشه‌ها',
-                    iconColor: Colors.deepPurple,
-                    onTap: _openProductDatabaseScreen,
-                  ),
-                  _buildToolCard(
-                    icon: Icons.share_outlined,
-                    title: 'اشتراک گزارش',
-                    subtitle: 'گزارش فروش و بارنامه',
-                    iconColor: Colors.orange,
-                    onTap: _shareSalesReport,
-                  ),
-                  _buildToolCard(
-                    icon: Icons.settings_outlined,
-                    title: 'تنظیمات',
-                    subtitle: 'پروفایل و ظاهر',
-                    iconColor: Colors.grey,
-                    onTap: _openSettingsScreen,
-                  ),
-                  _buildToolCard(
-                    icon: Icons.payments_outlined,
-                    title: 'هزینه‌های روزانه',
-                    subtitle: 'ثبت و مدیریت هزینه‌ها',
-                    iconColor: Colors.redAccent,
-                    onTap: _openDailyExpensesScreen,
-                  ),
-                ],
+                ),
               ),
               const SizedBox(height: 22),
               if (_currentItems.isNotEmpty) ...[
@@ -4307,111 +4357,112 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
             child: SafeArea(
               child: Column(
                 children: [
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.fromLTRB(20, 28, 20, 22),
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [
-                        Colors.green.shade700,
-                        Colors.green.shade500,
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.fromLTRB(20, 28, 20, 22),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [
+                          Colors.green.shade700,
+                          Colors.green.shade500,
+                        ],
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        const CircleAvatar(
+                          radius: 28,
+                          backgroundColor: Colors.white24,
+                          child:
+                              Icon(Icons.person, color: Colors.white, size: 30),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                _userName.isEmpty ? 'کاربر عزیز' : _userName,
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold),
+                              ),
+                              const SizedBox(height: 4),
+                              const Text('تنظیمات برنامه',
+                                  style: TextStyle(color: Colors.white70)),
+                            ],
+                          ),
+                        ),
                       ],
                     ),
                   ),
-                  child: Row(
-                    children: [
-                      const CircleAvatar(
-                        radius: 28,
-                        backgroundColor: Colors.white24,
-                        child:
-                            Icon(Icons.person, color: Colors.white, size: 30),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              _userName.isEmpty ? 'کاربر عزیز' : _userName,
-                              style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold),
-                            ),
-                            const SizedBox(height: 4),
-                            const Text('تنظیمات برنامه',
-                                style: TextStyle(color: Colors.white70)),
-                          ],
-                        ),
-                      ),
-                    ],
+                  ListTile(
+                    leading: const Icon(Icons.settings_outlined),
+                    title: const Text('تنظیمات'),
+                    subtitle: const Text('ظاهر، پروفایل و اطلاعات برنامه'),
+                    trailing: const Icon(Icons.chevron_left),
+                    onTap: _openSettingsPageFromDrawer,
                   ),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.settings_outlined),
-                  title: const Text('تنظیمات'),
-                  subtitle: const Text('ظاهر، پروفایل و اطلاعات برنامه'),
-                  trailing: const Icon(Icons.chevron_left),
-                  onTap: _openSettingsPageFromDrawer,
-                ),
-                ListTile(
-                  leading: const Icon(Icons.person_outline),
-                  title: const Text('پروفایل کاربر'),
-                  subtitle: const Text('تغییر نام کاربر'),
-                  trailing: const Icon(Icons.chevron_left),
-                  onTap: () {
-                    Navigator.pop(context);
-                    Future.delayed(const Duration(milliseconds: 220), () {
-                      Navigator.pushReplacement(
-                        context,
-                        MaterialPageRoute(builder: (_) => const LoginScreen()),
-                      );
-                    });
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.delete_sweep_outlined),
-                  title: const Text('سطل زباله'),
-                  subtitle: const Text('بازیابی یا حذف دائمی موارد'),
-                  trailing: const Icon(Icons.chevron_left),
-                  onTap: () {
-                    Navigator.pop(context);
-                    Future.delayed(const Duration(milliseconds: 220), () {
-                      if (mounted) _openTrashScreen();
-                    });
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.share_outlined),
-                  title: const Text('اشتراک‌گذاری گزارش'),
-                  subtitle: const Text('ارسال گزارش PDF فروش'),
-                  trailing: const Icon(Icons.chevron_left),
-                  onTap: () {
-                    Navigator.pop(context);
-                    Future.delayed(const Duration(milliseconds: 220), () {
-                      if (mounted) _shareSalesReport();
-                    });
-                  },
-                ),
-                ListTile(
-                  leading: const Icon(Icons.support_agent_outlined),
-                  title: const Text('ارتباط با پشتیبانی'),
-                  subtitle: const Text('ارسال پیام از طریق Gmail'),
-                  trailing: const Icon(Icons.chevron_left),
-                  onTap: () {
-                    Navigator.pop(context);
-                    Future.delayed(const Duration(milliseconds: 220), () {
-                      if (mounted) _contactSupport();
-                    });
-                  },
-                ),
-                const Divider(),
-                const Spacer(),
-                const Padding(
-                  padding: EdgeInsets.all(18),
-                  child: Text('توسعه‌دهنده: رضا قاسمی',
-                      style: TextStyle(color: Colors.grey)),
-                ),
+                  ListTile(
+                    leading: const Icon(Icons.person_outline),
+                    title: const Text('پروفایل کاربر'),
+                    subtitle: const Text('تغییر نام کاربر'),
+                    trailing: const Icon(Icons.chevron_left),
+                    onTap: () {
+                      Navigator.pop(context);
+                      Future.delayed(const Duration(milliseconds: 220), () {
+                        Navigator.pushReplacement(
+                          context,
+                          MaterialPageRoute(
+                              builder: (_) => const LoginScreen()),
+                        );
+                      });
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.delete_sweep_outlined),
+                    title: const Text('سطل زباله'),
+                    subtitle: const Text('بازیابی یا حذف دائمی موارد'),
+                    trailing: const Icon(Icons.chevron_left),
+                    onTap: () {
+                      Navigator.pop(context);
+                      Future.delayed(const Duration(milliseconds: 220), () {
+                        if (mounted) _openTrashScreen();
+                      });
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.share_outlined),
+                    title: const Text('اشتراک‌گذاری گزارش'),
+                    subtitle: const Text('ارسال گزارش PDF فروش'),
+                    trailing: const Icon(Icons.chevron_left),
+                    onTap: () {
+                      Navigator.pop(context);
+                      Future.delayed(const Duration(milliseconds: 220), () {
+                        if (mounted) _shareSalesReport();
+                      });
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.support_agent_outlined),
+                    title: const Text('ارتباط با پشتیبانی'),
+                    subtitle: const Text('ارسال پیام از طریق Gmail'),
+                    trailing: const Icon(Icons.chevron_left),
+                    onTap: () {
+                      Navigator.pop(context);
+                      Future.delayed(const Duration(milliseconds: 220), () {
+                        if (mounted) _contactSupport();
+                      });
+                    },
+                  ),
+                  const Divider(),
+                  const Spacer(),
+                  const Padding(
+                    padding: EdgeInsets.all(18),
+                    child: Text('توسعه‌دهنده: رضا قاسمی',
+                        style: TextStyle(color: Colors.grey)),
+                  ),
                 ],
               ),
             ),
@@ -5112,7 +5163,7 @@ class _ManifestScreenState extends State<ManifestScreen> {
         pw.MultiPage(
           pageFormat: PdfPageFormat.a4,
           margin: const pw.EdgeInsets.fromLTRB(28, 30, 28, 30),
-          textDirection: pw.TextDirection.ltr,
+          textDirection: pw.TextDirection.rtl,
           maxPages: 500,
           header: (context) => pw.Align(
               alignment: pw.Alignment.centerRight,
@@ -5206,224 +5257,6 @@ class _ManifestScreenState extends State<ManifestScreen> {
 
 // ==================== ادامه کد (SalesInvoicesScreen, SettingsScreen, ProductDatabaseScreen, BarcodeScannerScreen و مدل‌ها) در پاسخ بعدی ====================
 // ==================== صفحه فاکتورهای فروش ====================
-
-class DailyExpensesScreen extends StatefulWidget {
-  final List<DailyExpense> expenses;
-  final ValueChanged<List<DailyExpense>> onChanged;
-
-  const DailyExpensesScreen({
-    super.key,
-    required this.expenses,
-    required this.onChanged,
-  });
-
-  @override
-  State<DailyExpensesScreen> createState() => _DailyExpensesScreenState();
-}
-
-class _DailyExpensesScreenState extends State<DailyExpensesScreen> {
-  late List<DailyExpense> _expenses;
-  final TextEditingController _titleController = TextEditingController();
-  final TextEditingController _amountController = TextEditingController();
-
-  @override
-  void initState() {
-    super.initState();
-    _expenses = List<DailyExpense>.from(widget.expenses);
-  }
-
-  @override
-  void dispose() {
-    _titleController.dispose();
-    _amountController.dispose();
-    super.dispose();
-  }
-
-  String _formatAmount(int amount) => _toPersianDigits(
-        amount.toString().replaceAllMapped(
-          RegExp(r'(\d)(?=(\d{3})+(?!\d))'),
-          (m) => '${m[1]},',
-        ),
-      );
-
-  Future<void> _addExpense() async {
-    _titleController.clear();
-    _amountController.clear();
-    final result = await showDialog<DailyExpense>(
-      context: context,
-      builder: (dialogContext) => Directionality(
-        textDirection: TextDirection.rtl,
-        child: AlertDialog(
-          title: const Text('ثبت هزینه روزانه'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(
-                controller: _titleController,
-                autofocus: true,
-                decoration: const InputDecoration(
-                  labelText: 'نام هزینه',
-                  hintText: 'مثلاً کرایه، برق، خرید لوازم...',
-                  prefixIcon: Icon(Icons.edit_note),
-                ),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _amountController,
-                keyboardType: TextInputType.number,
-                inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                decoration: const InputDecoration(
-                  labelText: 'مبلغ هزینه (ریال)',
-                  hintText: 'مبلغ را وارد کنید',
-                  prefixIcon: Icon(Icons.payments_outlined),
-                ),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('انصراف'),
-            ),
-            FilledButton.icon(
-              onPressed: () {
-                final title = _titleController.text.trim();
-                final amount = int.tryParse(_amountController.text.trim()) ?? 0;
-                if (title.isEmpty || amount <= 0) {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('نام هزینه و مبلغ معتبر را وارد کنید')),
-                  );
-                  return;
-                }
-                final now = DateTime.now();
-                Navigator.pop(
-                  dialogContext,
-                  DailyExpense(
-                    id: '${now.microsecondsSinceEpoch}',
-                    title: title,
-                    amount: amount,
-                    date: _todayJalali(),
-                    createdAt: now.toIso8601String(),
-                  ),
-                );
-              },
-              icon: const Icon(Icons.check),
-              label: const Text('ثبت هزینه'),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (result == null) return;
-    setState(() => _expenses.insert(0, result));
-    widget.onChanged(List<DailyExpense>.from(_expenses));
-  }
-
-  Future<void> _deleteExpense(DailyExpense expense) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (context) => Directionality(
-        textDirection: TextDirection.rtl,
-        child: AlertDialog(
-          title: const Text('حذف هزینه'),
-          content: Text('هزینه «${expense.title}» حذف شود؟'),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('انصراف')),
-            FilledButton(
-              style: FilledButton.styleFrom(backgroundColor: Colors.red),
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('حذف'),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (ok != true) return;
-    setState(() => _expenses.removeWhere((e) => e.id == expense.id));
-    widget.onChanged(List<DailyExpense>.from(_expenses));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final total = _expenses.fold<int>(0, (sum, e) => sum + e.amount);
-    return Directionality(
-      textDirection: TextDirection.rtl,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('هزینه‌های روزانه'),
-          backgroundColor: Colors.green.shade700,
-          foregroundColor: Colors.white,
-        ),
-        body: Column(
-          children: [
-            Container(
-              margin: const EdgeInsets.all(16),
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(18),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.account_balance_wallet_outlined, color: Colors.redAccent, size: 30),
-                  const SizedBox(width: 12),
-                  const Expanded(
-                    child: Text('جمع کل هزینه‌ها', style: TextStyle(fontWeight: FontWeight.bold)),
-                  ),
-                  Text(
-                    '${_formatAmount(total)} ریال',
-                    style: const TextStyle(fontWeight: FontWeight.w900, color: Colors.redAccent),
-                  ),
-                ],
-              ),
-            ),
-            Expanded(
-              child: _expenses.isEmpty
-                  ? const Center(
-                      child: Text('هنوز هزینه‌ای ثبت نشده است.\nبا دکمه + اولین هزینه را ثبت کنید.', textAlign: TextAlign.center),
-                    )
-                  : ListView.separated(
-                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 90),
-                      itemCount: _expenses.length,
-                      separatorBuilder: (_, __) => const SizedBox(height: 8),
-                      itemBuilder: (context, index) {
-                        final expense = _expenses[index];
-                        return Card(
-                          child: ListTile(
-                            leading: CircleAvatar(
-                              backgroundColor: Colors.redAccent.withOpacity(.12),
-                              child: const Icon(Icons.payments_outlined, color: Colors.redAccent),
-                            ),
-                            title: Text(expense.title, style: const TextStyle(fontWeight: FontWeight.bold)),
-                            subtitle: Text('تاریخ: ${expense.date}'),
-                            trailing: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text('${_formatAmount(expense.amount)} ریال', style: const TextStyle(fontWeight: FontWeight.w800)),
-                                IconButton(
-                                  icon: const Icon(Icons.delete_outline, color: Colors.red),
-                                  onPressed: () => _deleteExpense(expense),
-                                ),
-                              ],
-                            ),
-                          ),
-                        );
-                      },
-                    ),
-            ),
-          ],
-        ),
-        floatingActionButton: FloatingActionButton.extended(
-          onPressed: _addExpense,
-          icon: const Icon(Icons.add),
-          label: const Text('ثبت هزینه'),
-          backgroundColor: Colors.green.shade700,
-          foregroundColor: Colors.white,
-        ),
-      ),
-    );
-  }
-}
 
 class SalesInvoicesScreen extends StatefulWidget {
   final List<SalesInvoice> invoices;
@@ -5836,7 +5669,7 @@ class _SalesInvoicesScreenState extends State<SalesInvoicesScreen> {
       }) {
         return pw.Text(
           text,
-          textDirection: pw.TextDirection.ltr,
+          textDirection: pw.TextDirection.rtl,
           textAlign: align,
           style: pw.TextStyle(
             font: font,
@@ -7156,6 +6989,451 @@ class _ProductDatabaseScreenState extends State<ProductDatabaseScreen> {
 
 // ==================== اسکنر بارکد ====================
 
+class InventoryCountScreen extends StatefulWidget {
+  final List<ProductDatabaseItem> products;
+  final List<InventoryCountEntry> entries;
+  final Future<void> Function(List<InventoryCountEntry>) onChanged;
+
+  const InventoryCountScreen({
+    super.key,
+    required this.products,
+    required this.entries,
+    required this.onChanged,
+  });
+
+  @override
+  State<InventoryCountScreen> createState() => _InventoryCountScreenState();
+}
+
+class _InventoryCountScreenState extends State<InventoryCountScreen> {
+  final TextEditingController _searchController = TextEditingController();
+  final Map<String, TextEditingController> _actualControllers = {};
+  late List<InventoryCountEntry> _entries;
+  List<ProductDatabaseItem> _results = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _entries = List<InventoryCountEntry>.from(widget.entries);
+    _results = List<ProductDatabaseItem>.from(widget.products);
+    for (final entry in _entries) {
+      _actualControllers[entry.barcode] = TextEditingController(
+        text: entry.actualStock.toString(),
+      );
+    }
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    for (final controller in _actualControllers.values) {
+      controller.dispose();
+    }
+    super.dispose();
+  }
+
+  void _search(String value) {
+    final q = value.trim().toLowerCase();
+    setState(() {
+      _results = q.isEmpty
+          ? List<ProductDatabaseItem>.from(widget.products)
+          : widget.products
+              .where((p) =>
+                  p.name.toLowerCase().contains(q) || p.barcode.contains(q))
+              .toList();
+    });
+  }
+
+  Future<void> _scan() async {
+    final result = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(builder: (_) => const BarcodeScannerScreen()),
+    );
+    if (!mounted || result == null || result.isEmpty) return;
+    _searchController.text = result;
+    _search(result);
+    final product = widget.products.cast<ProductDatabaseItem?>().firstWhere(
+          (p) => p!.barcode == result,
+          orElse: () => null,
+        );
+    if (product != null) _addProduct(product);
+  }
+
+  void _addProduct(ProductDatabaseItem product) {
+    if (_entries.any((e) => e.barcode == product.barcode)) {
+      _showMessage('این کالا قبلاً به لیست انبارگردانی اضافه شده است.');
+      return;
+    }
+    setState(() {
+      _entries.add(InventoryCountEntry(
+        id: '${DateTime.now().microsecondsSinceEpoch}-${product.barcode}',
+        barcode: product.barcode,
+        name: product.name,
+        systemStock: product.stock,
+        actualStock: product.stock,
+        date: _todayJalali(),
+      ));
+      _actualControllers[product.barcode] =
+          TextEditingController(text: product.stock.toString());
+      _searchController.clear();
+      _results = List<ProductDatabaseItem>.from(widget.products);
+    });
+  }
+
+  Future<void> _finalize() async {
+    final updated = <InventoryCountEntry>[];
+    for (final entry in _entries) {
+      final value = int.tryParse(
+            _actualControllers[entry.barcode]?.text.replaceAll(',', '') ?? '',
+          ) ??
+          0;
+      updated.add(InventoryCountEntry(
+        id: entry.id,
+        barcode: entry.barcode,
+        name: entry.name,
+        systemStock: entry.systemStock,
+        actualStock: value,
+        date: entry.date,
+      ));
+    }
+    await widget.onChanged(updated);
+    if (!mounted) return;
+    setState(() => _entries = updated);
+    _showMessage('انبارگردانی با موفقیت ثبت نهایی شد ✅');
+  }
+
+  void _showMessage(String message) {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('📦 انبارگردانی'),
+        backgroundColor: Colors.green.shade700,
+        foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.assessment_outlined),
+            tooltip: 'گزارش انبارگردانی',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => InventoryReportScreen(entries: _entries),
+                ),
+              );
+            },
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _searchController,
+                    onChanged: _search,
+                    decoration: InputDecoration(
+                      labelText: 'جستجوی کالا یا بارکد',
+                      prefixIcon: const Icon(Icons.search),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  decoration: BoxDecoration(
+                    color: Colors.green.shade700,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: IconButton(
+                    onPressed: _scan,
+                    icon:
+                        const Icon(Icons.qr_code_scanner, color: Colors.white),
+                    tooltip: 'اسکن بارکد',
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (_searchController.text.isNotEmpty)
+            SizedBox(
+              height: 145,
+              child: ListView.builder(
+                itemCount: _results.length,
+                itemBuilder: (_, index) {
+                  final product = _results[index];
+                  return ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.inventory_2_outlined),
+                    title: Text(product.name),
+                    subtitle: Text(
+                        'بارکد: ${product.barcode} | موجودی سیستمی: ${product.stock}'),
+                    trailing: const Icon(Icons.add_circle_outline),
+                    onTap: () => _addProduct(product),
+                  );
+                },
+              ),
+            ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text('اقلام انبارگردانی',
+                      style:
+                          TextStyle(fontWeight: FontWeight.bold, fontSize: 17)),
+                ),
+                Text('${_entries.length} کالا'),
+              ],
+            ),
+          ),
+          Expanded(
+            child: _entries.isEmpty
+                ? const Center(
+                    child: Text(
+                        'برای شروع، کالا را جستجو یا بارکد آن را اسکن کنید.'))
+                : ListView.builder(
+                    padding: const EdgeInsets.all(12),
+                    itemCount: _entries.length,
+                    itemBuilder: (_, index) {
+                      final entry = _entries[index];
+                      final actualController =
+                          _actualControllers[entry.barcode]!;
+                      return Card(
+                        margin: const EdgeInsets.only(bottom: 10),
+                        child: Padding(
+                          padding: const EdgeInsets.all(12),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(entry.name,
+                                        style: const TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 16)),
+                                  ),
+                                  IconButton(
+                                    onPressed: () {
+                                      setState(() {
+                                        _actualControllers
+                                            .remove(entry.barcode)
+                                            ?.dispose();
+                                        _entries.removeAt(index);
+                                      });
+                                    },
+                                    icon: const Icon(Icons.delete_outline,
+                                        color: Colors.red),
+                                  ),
+                                ],
+                              ),
+                              Text('بارکد: ${entry.barcode}'),
+                              const SizedBox(height: 8),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: InputDecorator(
+                                      decoration: const InputDecoration(
+                                          labelText: 'موجودی سیستمی',
+                                          border: OutlineInputBorder()),
+                                      child: Text(
+                                          _toPersianDigits(
+                                              entry.systemStock.toString()),
+                                          style: const TextStyle(
+                                              fontWeight: FontWeight.bold)),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: TextField(
+                                      controller: actualController,
+                                      keyboardType: TextInputType.number,
+                                      decoration: const InputDecoration(
+                                          labelText: 'موجودی واقعی',
+                                          border: OutlineInputBorder()),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+          ),
+          SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: _entries.isEmpty ? null : _finalize,
+                      icon: const Icon(Icons.check_circle_outline),
+                      label: const Text('ثبت نهایی انبارگردانی'),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  IconButton.filled(
+                    onPressed: _entries.isEmpty
+                        ? null
+                        : () => Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) =>
+                                    InventoryReportScreen(entries: _entries),
+                              ),
+                            ),
+                    icon: const Icon(Icons.assessment_outlined),
+                    tooltip: 'گزارش انبارگردانی',
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class InventoryReportScreen extends StatelessWidget {
+  final List<InventoryCountEntry> entries;
+
+  const InventoryReportScreen({super.key, required this.entries});
+
+  @override
+  Widget build(BuildContext context) {
+    final mismatches = entries.where((e) => e.difference != 0).toList();
+    final shortage = mismatches
+        .where((e) => e.difference < 0)
+        .fold<int>(0, (sum, e) => sum + e.difference.abs());
+    final surplus = mismatches
+        .where((e) => e.difference > 0)
+        .fold<int>(0, (sum, e) => sum + e.difference);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('📊 گزارش انبارگردانی'),
+        backgroundColor: Colors.green.shade700,
+        foregroundColor: Colors.white,
+      ),
+      body: entries.isEmpty
+          ? const Center(
+              child: Text('هنوز گزارشی از انبارگردانی ثبت نشده است.'))
+          : ListView(
+              padding: const EdgeInsets.all(12),
+              children: [
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(14),
+                    child: Column(
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceAround,
+                          children: [
+                            _summary('کل اقلام', '${entries.length}',
+                                Colors.black87),
+                            _summary(
+                                'مغایرت', '${mismatches.length}', Colors.red),
+                            _summary(
+                                'کسری',
+                                _toPersianDigits(shortage.toString()),
+                                Colors.red),
+                            _summary(
+                                'اضافی',
+                                _toPersianDigits(surplus.toString()),
+                                Colors.green),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: Text('تاریخ گزارش: ${entries.last.date}',
+                              style: const TextStyle(color: Colors.grey)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 10),
+                if (mismatches.isEmpty)
+                  const Card(
+                    child: Padding(
+                      padding: EdgeInsets.all(20),
+                      child: Center(
+                          child: Text(
+                              'مغایرتی بین موجودی سیستمی و واقعی پیدا نشد ✅')),
+                    ),
+                  )
+                else
+                  ...mismatches.map(
+                    (entry) => Card(
+                      margin: const EdgeInsets.only(bottom: 9),
+                      child: Padding(
+                        padding: const EdgeInsets.all(12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(entry.name,
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.bold, fontSize: 16)),
+                            const SizedBox(height: 4),
+                            Text('بارکد: ${entry.barcode}'),
+                            const Divider(),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                    'سیستمی: ${_toPersianDigits(entry.systemStock.toString())}'),
+                                Text(
+                                    'واقعی: ${_toPersianDigits(entry.actualStock.toString())}'),
+                                Text(
+                                  'مغایرت: ${entry.difference > 0 ? '+' : ''}${_toPersianDigits(entry.difference.toString())}',
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    color: entry.difference > 0
+                                        ? Colors.green
+                                        : Colors.red,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+    );
+  }
+
+  Widget _summary(String title, String value, Color color) {
+    return Column(
+      children: [
+        Text(title, style: const TextStyle(fontSize: 11)),
+        const SizedBox(height: 3),
+        Text(value,
+            style: TextStyle(
+                fontWeight: FontWeight.bold, color: color, fontSize: 16)),
+      ],
+    );
+  }
+}
+
 class BarcodeScannerScreen extends StatefulWidget {
   const BarcodeScannerScreen({super.key});
 
@@ -7246,35 +7524,46 @@ class _BarcodeScannerScreenState extends State<BarcodeScannerScreen> {
 
 // ==================== مدل‌های داده ====================
 
-class DailyExpense {
+class InventoryCountEntry {
   final String id;
-  final String title;
-  final int amount;
+  final String barcode;
+  final String name;
+  final int systemStock;
+  final int actualStock;
   final String date;
-  final String createdAt;
 
-  DailyExpense({
+  InventoryCountEntry({
     required this.id,
-    required this.title,
-    required this.amount,
+    required this.barcode,
+    required this.name,
+    required this.systemStock,
+    required this.actualStock,
     required this.date,
-    required this.createdAt,
   });
+
+  int get difference => actualStock - systemStock;
 
   Map<String, dynamic> toJson() => {
         'id': id,
-        'title': title,
-        'amount': amount,
+        'barcode': barcode,
+        'name': name,
+        'systemStock': systemStock,
+        'actualStock': actualStock,
         'date': date,
-        'createdAt': createdAt,
       };
 
-  factory DailyExpense.fromJson(Map<String, dynamic> json) => DailyExpense(
+  factory InventoryCountEntry.fromJson(Map<String, dynamic> json) =>
+      InventoryCountEntry(
         id: json['id']?.toString() ?? '',
-        title: json['title']?.toString() ?? '',
-        amount: int.tryParse(json['amount']?.toString() ?? '') ?? 0,
+        barcode: json['barcode']?.toString() ?? '',
+        name: json['name']?.toString() ?? '',
+        systemStock: (json['systemStock'] ?? 0) is int
+            ? json['systemStock'] as int
+            : int.tryParse('${json['systemStock']}') ?? 0,
+        actualStock: (json['actualStock'] ?? 0) is int
+            ? json['actualStock'] as int
+            : int.tryParse('${json['actualStock']}') ?? 0,
         date: json['date']?.toString() ?? '',
-        createdAt: json['createdAt']?.toString() ?? '',
       );
 }
 
