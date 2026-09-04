@@ -625,6 +625,7 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
   List<String> _smartLogs = [];
   List<ProductDatabaseItem> _productDatabase = [];
   List<SalesInvoice> _salesInvoices = [];
+  List<TrashItem> _trashItems = [];
 
   final TextEditingController _nameController = TextEditingController();
   final TextEditingController _quantityController = TextEditingController();
@@ -655,6 +656,7 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
     _loadSmartLogs();
     _loadProductDatabase();
     _loadSalesInvoices();
+    _loadTrashAndCleanup();
     _loadSettings();
   }
 
@@ -1686,12 +1688,35 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
       _slideRoute(
         SalesInvoicesScreen(
           invoices: _salesInvoices,
-          onInvoiceDeleted: (invoiceId) {
+          onInvoiceDeleted: (group) async {
+            if (group.isEmpty) return;
+            await _addToTrash(
+              type: 'invoice',
+              title: 'فاکتور شماره ${group.first.number}',
+              data: {'invoices': group.map((e) => e.toJson()).toList()},
+            );
             setState(() {
-              _salesInvoices.removeWhere((inv) => inv.id == invoiceId);
+              _salesInvoices
+                  .removeWhere((inv) => inv.number == group.first.number);
+              for (final invoice in group) {
+                final pIndex = _productDatabase
+                    .indexWhere((p) => p.barcode == invoice.barcode);
+                if (pIndex != -1) {
+                  final p = _productDatabase[pIndex];
+                  _productDatabase[pIndex] = ProductDatabaseItem(
+                    barcode: p.barcode,
+                    name: p.name,
+                    stock: p.stock + invoice.quantity,
+                    buyPrice: p.buyPrice,
+                    sellPrice: p.sellPrice,
+                    folder: p.folder,
+                  );
+                }
+              }
             });
-            _saveSalesInvoices();
-            _addSmartLog('🗑️ فاکتور فروش حذف شد');
+            await _saveSalesInvoices();
+            await _saveProductDatabase();
+            _addSmartLog('🗑️ فاکتور فروش به سطل زباله منتقل شد');
           },
           onInvoiceUpdated: (updatedInvoices) {
             setState(() {
@@ -1699,6 +1724,7 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
             });
             _saveSalesInvoices();
           },
+          onInvoiceEditRequested: (group) => _showSalesDialog(editGroup: group),
           onNewInvoice: _showSalesDialog,
           onViewDetails: _viewInvoiceDetails,
         ),
@@ -1726,17 +1752,194 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
     await prefs.setString('sales_invoices', jsonEncode(dataJson));
   }
 
+  Future<void> _loadTrashAndCleanup() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString('trash_items');
+    List<TrashItem> items = [];
+    if (raw != null && raw.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(raw) as List;
+        items = decoded
+            .map((e) => TrashItem.fromJson(Map<String, dynamic>.from(e)))
+            .toList();
+      } catch (_) {}
+    }
+    final cutoff =
+        DateTime.now().subtract(const Duration(days: 7)).millisecondsSinceEpoch;
+    final cleaned = items.where((e) => e.deletedAt > cutoff).toList();
+    if (cleaned.length != items.length) {
+      await prefs.setString(
+          'trash_items', jsonEncode(cleaned.map((e) => e.toJson()).toList()));
+    }
+    if (mounted) setState(() => _trashItems = cleaned);
+  }
+
+  Future<void> _saveTrash() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+        'trash_items', jsonEncode(_trashItems.map((e) => e.toJson()).toList()));
+  }
+
+  Future<void> _addToTrash({
+    required String type,
+    required String title,
+    required Map<String, dynamic> data,
+  }) async {
+    final item = TrashItem(
+      id: '${DateTime.now().millisecondsSinceEpoch}-${_trashItems.length}',
+      type: type,
+      title: title,
+      deletedAt: DateTime.now().millisecondsSinceEpoch,
+      data: data,
+    );
+    _trashItems.add(item);
+    await _saveTrash();
+  }
+
+  Future<bool> _restoreTrashItem(TrashItem item) async {
+    try {
+      if (item.type == 'invoice') {
+        final raw = item.data['invoices'];
+        final invoices = (raw as List)
+            .map((e) => SalesInvoice.fromJson(Map<String, dynamic>.from(e)))
+            .toList();
+        if (invoices.isEmpty) return false;
+        for (final inv in invoices) {
+          final idx =
+              _productDatabase.indexWhere((p) => p.barcode == inv.barcode);
+          if (idx == -1 || _productDatabase[idx].stock < inv.quantity) {
+            return false;
+          }
+        }
+        var number = invoices.first.number;
+        final conflict = _salesInvoices.any((x) => x.number == number);
+        if (conflict) number = _getNextInvoiceNumber();
+        for (final inv in invoices) {
+          final restored =
+              number == inv.number ? inv : inv.copyWith(number: number);
+          _salesInvoices.add(restored);
+          final idx =
+              _productDatabase.indexWhere((p) => p.barcode == inv.barcode);
+          if (idx != -1) {
+            final p = _productDatabase[idx];
+            _productDatabase[idx] = ProductDatabaseItem(
+              barcode: p.barcode,
+              name: p.name,
+              stock: (p.stock - inv.quantity).clamp(0, 1 << 30).toInt(),
+              buyPrice: p.buyPrice,
+              sellPrice: p.sellPrice,
+              folder: p.folder,
+            );
+          }
+        }
+        await _saveSalesInvoices();
+        await _saveProductDatabase();
+      } else if (item.type == 'product') {
+        final product = ProductDatabaseItem.fromJson(item.data);
+        if (_productDatabase.any((p) => p.barcode == product.barcode))
+          return false;
+        _productDatabase.add(product);
+        await _saveProductDatabase();
+      } else if (item.type == 'manifest') {
+        final manifest = DeliveryManifest.fromJson(item.data);
+        if (_savedManifests.any((m) => m.id == manifest.id)) return false;
+        _savedManifests.add(manifest);
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('delivery_manifests',
+            jsonEncode(_savedManifests.map((m) => m.toJson()).toList()));
+      } else if (item.type == 'manifest_item') {
+        final manifestId = item.data['manifestId']?.toString();
+        final manifestIndex =
+            _savedManifests.indexWhere((m) => m.id == manifestId);
+        if (manifestIndex == -1) return false;
+        final deliveryItem = DeliveryItem.fromJson(
+            Map<String, dynamic>.from(item.data['item'] ?? {}));
+        final manifest = _savedManifests[manifestIndex];
+        if (manifest.items.any((x) =>
+            x.barcode == deliveryItem.barcode &&
+            x.name == deliveryItem.name &&
+            x.quantity == deliveryItem.quantity)) {
+          return false;
+        }
+        manifest.items.add(deliveryItem);
+        manifest.totalPrice +=
+            deliveryItem.purchasePrice * deliveryItem.realQuantity;
+        await _saveManifestChanges(manifest);
+      } else {
+        return false;
+      }
+      _trashItems.removeWhere((x) => x.id == item.id);
+      await _saveTrash();
+      if (mounted) setState(() {});
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _openTrashScreen() async {
+    _closeKeyboard();
+    await Navigator.push(
+      context,
+      _slideRoute(
+        TrashScreen(
+          items: _trashItems,
+          onRestore: _restoreTrashItem,
+          onChanged: () async {
+            await _loadTrashAndCleanup();
+          },
+        ),
+      ),
+    );
+    await _loadTrashAndCleanup();
+  }
+
   Future<void> _showSalesDialog({
     String? productName,
     String? productBarcode,
     int? sellPrice,
+    List<SalesInvoice>? editGroup,
   }) async {
     _closeKeyboard();
-    final customerNameCtrl = TextEditingController();
-    final customerPhoneCtrl = TextEditingController();
+    final customerNameCtrl = TextEditingController(
+        text:
+            editGroup?.isNotEmpty == true ? editGroup!.first.customerName : '');
+    final customerPhoneCtrl = TextEditingController(
+        text: editGroup?.isNotEmpty == true
+            ? editGroup!.first.customerPhone
+            : '');
+    final dateCtrl = TextEditingController(
+        text: editGroup?.isNotEmpty == true
+            ? editGroup!.first.date
+            : _getTodayDate());
     final searchCtrl = TextEditingController();
-    bool isCredit = false;
+    bool isCredit =
+        editGroup?.isNotEmpty == true ? editGroup!.first.isCredit : false;
     final selected = <Map<String, dynamic>>[];
+
+    if (editGroup != null) {
+      for (final inv in editGroup) {
+        final product =
+            _productDatabase.cast<ProductDatabaseItem?>().firstWhere(
+                  (p) => p?.barcode == inv.barcode,
+                  orElse: () => null,
+                );
+        if (product != null) {
+          selected.add({'product': product, 'quantity': inv.quantity});
+        } else {
+          selected.add({
+            'product': ProductDatabaseItem(
+              barcode: inv.barcode,
+              name: inv.productName,
+              stock: 0,
+              buyPrice: 0,
+              sellPrice: inv.price,
+            ),
+            'quantity': inv.quantity,
+          });
+        }
+      }
+    }
 
     if (productBarcode != null && productBarcode.isNotEmpty) {
       final product = _productDatabase.cast<ProductDatabaseItem?>().firstWhere(
@@ -1812,10 +2015,21 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                     padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
                     child: Column(
                       children: [
-                        const Text('فاکتور فروش',
+                        Text(
+                            editGroup != null ? 'ویرایش فاکتور' : 'فاکتور فروش',
                             style: TextStyle(
                                 fontSize: 21, fontWeight: FontWeight.bold)),
                         const SizedBox(height: 8),
+                        if (editGroup != null) ...[
+                          TextField(
+                            controller: dateCtrl,
+                            decoration: const InputDecoration(
+                              labelText: 'تاریخ فاکتور',
+                              prefixIcon: Icon(Icons.calendar_today_outlined),
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                        ],
                         Container(
                           padding: const EdgeInsets.all(12),
                           decoration: BoxDecoration(
@@ -2001,10 +2215,12 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                                         fontSize: 17))),
                             FilledButton.icon(
                               icon: const Icon(Icons.check),
-                              label: const Text('ثبت فاکتور'),
+                              label: Text(editGroup != null
+                                  ? 'ذخیره تغییرات'
+                                  : 'ثبت فاکتور'),
                               onPressed: selected.isEmpty
                                   ? null
-                                  : () {
+                                  : () async {
                                       _closeKeyboard();
                                       if (isCredit &&
                                           (customerNameCtrl.text
@@ -2019,17 +2235,101 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                                                     'برای فروش نسیه، نام مشتری و شماره موبایل الزامی است')));
                                         return;
                                       }
-                                      final invoiceNumber =
-                                          _getNextInvoiceNumber();
                                       final now = DateTime.now()
                                           .millisecondsSinceEpoch
                                           .toString();
+                                      final invoiceNumber = editGroup != null
+                                          ? editGroup!.first.number
+                                          : _getNextInvoiceNumber();
+                                      final newQuantities = <String, int>{};
                                       for (final line in selected) {
                                         final p = line['product']
                                             as ProductDatabaseItem;
+                                        newQuantities[p.barcode] =
+                                            (newQuantities[p.barcode] ?? 0) +
+                                                (line['quantity'] as int);
+                                      }
+                                      final oldQuantities = <String, int>{};
+                                      if (editGroup != null) {
+                                        for (final inv in editGroup!) {
+                                          oldQuantities[inv.barcode] =
+                                              (oldQuantities[inv.barcode] ??
+                                                      0) +
+                                                  inv.quantity;
+                                        }
+                                      }
+                                      for (final entry
+                                          in newQuantities.entries) {
+                                        final idx = _productDatabase.indexWhere(
+                                            (p) => p.barcode == entry.key);
+                                        if (idx == -1) {
+                                          ScaffoldMessenger.of(context)
+                                              .showSnackBar(
+                                            SnackBar(
+                                                content: Text(
+                                                    'کالای ${entry.key} در بانک اطلاعاتی موجود نیست')),
+                                          );
+                                          return;
+                                        }
+                                        final oldQty =
+                                            oldQuantities[entry.key] ?? 0;
+                                        final available =
+                                            _productDatabase[idx].stock +
+                                                oldQty;
+                                        if (entry.value > available) {
+                                          ScaffoldMessenger.of(context)
+                                              .showSnackBar(
+                                            SnackBar(
+                                                content: Text(
+                                                    'موجودی ${_productDatabase[idx].name} کافی نیست')),
+                                          );
+                                          return;
+                                        }
+                                      }
+                                      if (editGroup != null) {
+                                        _salesInvoices.removeWhere((inv) =>
+                                            inv.number ==
+                                            editGroup!.first.number);
+                                      }
+                                      final allBarcodes = <String>{
+                                        ...oldQuantities.keys,
+                                        ...newQuantities.keys,
+                                      };
+                                      for (final barcode in allBarcodes) {
+                                        final idx = _productDatabase.indexWhere(
+                                            (p) => p.barcode == barcode);
+                                        if (idx == -1) continue;
+                                        final delta =
+                                            (newQuantities[barcode] ?? 0) -
+                                                (oldQuantities[barcode] ?? 0);
+                                        if (delta != 0) {
+                                          final p = _productDatabase[idx];
+                                          _productDatabase[idx] =
+                                              ProductDatabaseItem(
+                                            barcode: p.barcode,
+                                            name: p.name,
+                                            stock: (p.stock - delta)
+                                                .clamp(0, 1 << 30)
+                                                .toInt(),
+                                            buyPrice: p.buyPrice,
+                                            sellPrice: p.sellPrice,
+                                            folder: p.folder,
+                                          );
+                                        }
+                                      }
+                                      for (var i = 0;
+                                          i < selected.length;
+                                          i++) {
+                                        final line = selected[i];
+                                        final p = line['product']
+                                            as ProductDatabaseItem;
                                         final qty = line['quantity'] as int;
-                                        final invoice = SalesInvoice(
-                                          id: '$now-${p.barcode}',
+                                        final old = editGroup != null &&
+                                                i < editGroup!.length
+                                            ? editGroup![i]
+                                            : null;
+                                        _salesInvoices.add(SalesInvoice(
+                                          id: old?.id ?? '$now-${p.barcode}-$i',
                                           number: invoiceNumber,
                                           productName: p.name,
                                           barcode: p.barcode,
@@ -2041,36 +2341,22 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                                           customerPhone:
                                               customerPhoneCtrl.text.trim(),
                                           isCredit: isCredit,
-                                          date: _getTodayDate(),
-                                          createdAt: now,
-                                        );
-                                        _salesInvoices.add(invoice);
-                                        final productIndex =
-                                            _productDatabase.indexWhere(
-                                                (x) => x.barcode == p.barcode);
-                                        if (productIndex != -1) {
-                                          final newStock =
-                                              _productDatabase[productIndex]
-                                                      .stock -
-                                                  qty;
-                                          _productDatabase[productIndex] =
-                                              ProductDatabaseItem(
-                                            barcode: p.barcode,
-                                            name: p.name,
-                                            stock: newStock < 0 ? 0 : newStock,
-                                            buyPrice: p.buyPrice,
-                                            sellPrice: p.sellPrice,
-                                          );
-                                        }
+                                          date: editGroup != null
+                                              ? dateCtrl.text.trim()
+                                              : _getTodayDate(),
+                                          createdAt: old?.createdAt ?? now,
+                                        ));
                                       }
-                                      _saveSalesInvoices();
-                                      _saveProductDatabase();
-                                      _addSmartLog(
-                                          '💰 فاکتور شماره $invoiceNumber با ${selected.length} قلم ثبت شد');
+                                      await _saveSalesInvoices();
+                                      await _saveProductDatabase();
+                                      _addSmartLog(editGroup != null
+                                          ? '✏️ فاکتور شماره $invoiceNumber ویرایش شد'
+                                          : '💰 فاکتور شماره $invoiceNumber با ${selected.length} قلم ثبت شد');
                                       setState(() {});
                                       Navigator.pop(sheetContext);
-                                      _showSuccessMessage(
-                                          'فاکتور شماره $invoiceNumber ثبت شد ✅');
+                                      _showSuccessMessage(editGroup != null
+                                          ? 'فاکتور شماره $invoiceNumber ویرایش شد ✅'
+                                          : 'فاکتور شماره $invoiceNumber ثبت شد ✅');
                                     },
                             ),
                           ]),
@@ -2085,6 +2371,10 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
         );
       },
     );
+    dateCtrl.dispose();
+    customerNameCtrl.dispose();
+    customerPhoneCtrl.dispose();
+    searchCtrl.dispose();
   }
 
   void _openProductDatabaseScreen() {
@@ -2101,12 +2391,29 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
             _saveProductDatabase();
             _addSmartLog('🔄 بانک اطلاعاتی کالاها به‌روزرسانی شد');
           },
-          onItemDeleted: (barcode) {
+          onItemDeleted: (item) async {
+            await _addToTrash(
+              type: 'product',
+              title: 'کالا: ${item.name}',
+              data: item.toJson(),
+            );
             setState(() {
-              _productDatabase.removeWhere((item) => item.barcode == barcode);
+              _productDatabase.removeWhere((p) => p.barcode == item.barcode);
             });
-            _saveProductDatabase();
-            _addSmartLog('🗑️ کالا از بانک اطلاعاتی حذف شد');
+            await _saveProductDatabase();
+            _addSmartLog('🗑️ کالا به سطل زباله منتقل شد');
+          },
+          onDeleteAll: (items) async {
+            for (final item in items) {
+              await _addToTrash(
+                type: 'product',
+                title: 'کالا: ${item.name}',
+                data: item.toJson(),
+              );
+            }
+            setState(() => _productDatabase.clear());
+            await _saveProductDatabase();
+            _addSmartLog('🗑️ کل بانک اطلاعاتی به سطل زباله منتقل شد');
           },
         ),
       ),
@@ -2566,9 +2873,18 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                           trailing: IconButton(
                             icon: const Icon(Icons.remove_circle_outline,
                                 color: Colors.red, size: 20),
-                            onPressed: () {
+                            onPressed: () async {
+                              final removedItem = manifest.items[index];
+                              await _addToTrash(
+                                type: 'manifest_item',
+                                title:
+                                    'قلم ${removedItem.name} از بارنامه ${manifest.number}',
+                                data: {
+                                  'manifestId': manifest.id,
+                                  'item': removedItem.toJson(),
+                                },
+                              );
                               setState(() {
-                                final removedItem = manifest.items[index];
                                 manifest.items.removeAt(index);
                                 manifest.totalPrice -=
                                     removedItem.purchasePrice *
@@ -2661,6 +2977,11 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
               ),
             ),
             onPressed: () async {
+              await _addToTrash(
+                type: 'manifest',
+                title: 'بارنامه شماره ${manifest.number}',
+                data: manifest.toJson(),
+              );
               setState(() {
                 _savedManifests.remove(manifest);
               });
@@ -3748,6 +4069,12 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
           actions: [
             if (!_isViewingManifest)
               IconButton(
+                icon: const Icon(Icons.delete_sweep_outlined),
+                tooltip: 'سطل زباله',
+                onPressed: _openTrashScreen,
+              ),
+            if (!_isViewingManifest)
+              IconButton(
                 icon: const Icon(Icons.settings_outlined),
                 tooltip: 'تنظیمات',
                 onPressed: _openSettingsScreen,
@@ -4651,8 +4978,9 @@ class _ManifestScreenState extends State<ManifestScreen> {
 
 class SalesInvoicesScreen extends StatefulWidget {
   final List<SalesInvoice> invoices;
-  final Function(String) onInvoiceDeleted;
+  final Future<void> Function(List<SalesInvoice>) onInvoiceDeleted;
   final Function(List<SalesInvoice>) onInvoiceUpdated;
+  final Future<void> Function(List<SalesInvoice>) onInvoiceEditRequested;
   final Future<void> Function() onNewInvoice;
   final Function(SalesInvoice) onViewDetails;
 
@@ -4661,6 +4989,7 @@ class SalesInvoicesScreen extends StatefulWidget {
     required this.invoices,
     required this.onInvoiceDeleted,
     required this.onInvoiceUpdated,
+    required this.onInvoiceEditRequested,
     required this.onNewInvoice,
     required this.onViewDetails,
   });
@@ -4711,6 +5040,11 @@ class _SalesInvoicesScreenState extends State<SalesInvoicesScreen> {
     return groups;
   }
 
+  Future<void> _editInvoiceGroup(List<SalesInvoice> group) async {
+    await widget.onInvoiceEditRequested(group);
+    if (mounted) setState(() => _invoices = List.from(widget.invoices));
+  }
+
   Future<void> _deleteInvoiceGroup(int number, List<SalesInvoice> group) async {
     _closeKeyboard();
     final ok = await showDialog<bool>(
@@ -4734,9 +5068,7 @@ class _SalesInvoicesScreenState extends State<SalesInvoicesScreen> {
     );
     if (ok != true) return;
 
-    for (final invoice in group) {
-      widget.onInvoiceDeleted(invoice.id);
-    }
+    await widget.onInvoiceDeleted(group);
     setState(() {
       _invoices.removeWhere((inv) => inv.number == number);
     });
@@ -4896,8 +5228,16 @@ class _SalesInvoicesScreenState extends State<SalesInvoicesScreen> {
                                         ),
                                       ),
                                       IconButton(
+                                        icon: const Icon(Icons.edit_outlined,
+                                            color: Colors.orange),
+                                        tooltip: 'ویرایش فاکتور',
+                                        onPressed: () =>
+                                            _editInvoiceGroup(group),
+                                      ),
+                                      IconButton(
                                         icon: const Icon(Icons.delete_outline,
                                             color: Colors.red),
+                                        tooltip: 'انتقال به سطل زباله',
                                         onPressed: () =>
                                             _deleteInvoiceGroup(number, group),
                                       ),
@@ -5296,6 +5636,186 @@ class _SalesInvoicesScreenState extends State<SalesInvoicesScreen> {
   }
 }
 
+class TrashScreen extends StatefulWidget {
+  final List<TrashItem> items;
+  final Future<bool> Function(TrashItem) onRestore;
+  final Future<void> Function() onChanged;
+
+  const TrashScreen({
+    super.key,
+    required this.items,
+    required this.onRestore,
+    required this.onChanged,
+  });
+
+  @override
+  State<TrashScreen> createState() => _TrashScreenState();
+}
+
+class _TrashScreenState extends State<TrashScreen> {
+  late List<TrashItem> _items;
+
+  @override
+  void initState() {
+    super.initState();
+    _items = List.from(widget.items);
+    _cleanupExpired();
+  }
+
+  Future<void> _cleanupExpired() async {
+    final cutoff =
+        DateTime.now().subtract(const Duration(days: 7)).millisecondsSinceEpoch;
+    final expired = _items.where((e) => e.deletedAt <= cutoff).toList();
+    if (expired.isEmpty) return;
+    _items.removeWhere((e) => e.deletedAt <= cutoff);
+    await _save();
+  }
+
+  Future<void> _save() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+        'trash_items', jsonEncode(_items.map((e) => e.toJson()).toList()));
+    await widget.onChanged();
+  }
+
+  String _typeTitle(String type) {
+    switch (type) {
+      case 'invoice':
+        return 'فاکتور فروش';
+      case 'product':
+        return 'کالا';
+      case 'manifest':
+        return 'بارنامه';
+      default:
+        return 'مورد حذف‌شده';
+    }
+  }
+
+  Future<void> _restore(TrashItem item) async {
+    final ok = await widget.onRestore(item);
+    if (!mounted) return;
+    if (ok) {
+      setState(() => _items.removeWhere((x) => x.id == item.id));
+      await _save();
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('${item.title} بازیابی شد ✅')));
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text(
+              'بازیابی انجام نشد؛ احتمالاً مورد مشابه در اطلاعات فعلی وجود دارد.')));
+    }
+  }
+
+  Future<void> _deletePermanently(TrashItem item) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('حذف دائمی'),
+        content: Text(
+            '«${item.title}» برای همیشه حذف شود؟ این عملیات قابل برگشت نیست.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('انصراف')),
+          FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('حذف دائمی')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    setState(() => _items.removeWhere((x) => x.id == item.id));
+    await _save();
+  }
+
+  Future<void> _emptyTrash() async {
+    if (_items.isEmpty) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('خالی کردن سطل زباله'),
+        content: const Text('تمام موارد سطل زباله برای همیشه حذف شوند؟'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('انصراف')),
+          FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: Colors.red),
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('خالی کردن')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    setState(() => _items.clear());
+    await _save();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('🗑️ سطل زباله'),
+        backgroundColor: Colors.green.shade700,
+        foregroundColor: Colors.white,
+        actions: [
+          if (_items.isNotEmpty)
+            IconButton(
+                icon: const Icon(Icons.delete_forever),
+                tooltip: 'خالی کردن سطل',
+                onPressed: _emptyTrash),
+        ],
+      ),
+      body: _items.isEmpty
+          ? const Center(
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+              Icon(Icons.delete_outline, size: 80, color: Colors.grey),
+              SizedBox(height: 12),
+              Text('سطل زباله خالی است',
+                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              SizedBox(height: 6),
+              Text('موارد حذف‌شده تا ۷ روز اینجا نگهداری می‌شوند.'),
+            ]))
+          : ListView.builder(
+              padding: const EdgeInsets.all(12),
+              itemCount: _items.length,
+              itemBuilder: (context, index) {
+                final item = _items[index];
+                final date =
+                    DateTime.fromMillisecondsSinceEpoch(item.deletedAt);
+                return Card(
+                  margin: const EdgeInsets.only(bottom: 10),
+                  child: ListTile(
+                    leading: CircleAvatar(
+                        child: Icon(item.type == 'invoice'
+                            ? Icons.receipt_long
+                            : item.type == 'manifest'
+                                ? Icons.local_shipping_outlined
+                                : Icons.inventory_2_outlined)),
+                    title: Text(item.title,
+                        style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Text(
+                        '${_typeTitle(item.type)} • حذف شده در ${date.year}/${date.month.toString().padLeft(2, '0')}/${date.day.toString().padLeft(2, '0')}'),
+                    trailing: Wrap(spacing: 0, children: [
+                      IconButton(
+                          icon: const Icon(Icons.restore, color: Colors.green),
+                          tooltip: 'بازیابی',
+                          onPressed: () => _restore(item)),
+                      IconButton(
+                          icon: const Icon(Icons.delete_forever,
+                              color: Colors.red),
+                          tooltip: 'حذف دائمی',
+                          onPressed: () => _deletePermanently(item)),
+                    ]),
+                  ),
+                );
+              },
+            ),
+    );
+  }
+}
+
 // ==================== صفحه تنظیمات ====================
 
 class SettingsScreen extends StatefulWidget {
@@ -5518,13 +6038,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
 class ProductDatabaseScreen extends StatefulWidget {
   final List<ProductDatabaseItem> database;
   final Function(List<ProductDatabaseItem>) onDatabaseUpdated;
-  final Function(String) onItemDeleted;
+  final Future<void> Function(ProductDatabaseItem) onItemDeleted;
+  final Future<void> Function(List<ProductDatabaseItem>) onDeleteAll;
 
   const ProductDatabaseScreen({
     super.key,
     required this.database,
     required this.onDatabaseUpdated,
     required this.onItemDeleted,
+    required this.onDeleteAll,
   });
 
   @override
@@ -5615,11 +6137,11 @@ class _ProductDatabaseScreenState extends State<ProductDatabaseScreen> {
               backgroundColor: Colors.red,
               foregroundColor: Colors.white,
             ),
-            onPressed: () {
+            onPressed: () async {
               setState(() {
                 _items.removeWhere((p) => p.barcode == item.barcode);
               });
-              widget.onItemDeleted(item.barcode);
+              await widget.onItemDeleted(item);
               _notifyUpdate();
               Navigator.pop(context);
               ScaffoldMessenger.of(context).showSnackBar(
@@ -5631,6 +6153,44 @@ class _ProductDatabaseScreenState extends State<ProductDatabaseScreen> {
         ],
       ),
     );
+  }
+
+  Future<void> _showDeleteAllDialog() async {
+    _closeKeyboard();
+    if (_items.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('بانک اطلاعاتی خالی است')));
+      return;
+    }
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('⚠️ حذف کل اطلاعات'),
+        content: Text(
+            'تمام ${_items.length} کالای بانک اطلاعاتی به سطل زباله منتقل می‌شوند. ادامه می‌دهید؟'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('انصراف')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('انتقال به سطل زباله'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final deleted = List<ProductDatabaseItem>.from(_items);
+    setState(() {
+      _items.clear();
+      _customFolders.clear();
+    });
+    await _saveFolders();
+    await widget.onDeleteAll(deleted);
+    _notifyUpdate();
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('کل اطلاعات بانک به سطل زباله منتقل شد 🗑️')));
   }
 
   void _showNewFolderDialog() {
@@ -5959,6 +6519,11 @@ class _ProductDatabaseScreenState extends State<ProductDatabaseScreen> {
             onPressed: _showGuideDialog,
           ),
           IconButton(
+            icon: const Icon(Icons.delete_sweep_outlined),
+            tooltip: 'حذف کل اطلاعات',
+            onPressed: _showDeleteAllDialog,
+          ),
+          IconButton(
             icon: const Icon(Icons.add),
             tooltip: 'افزودن دستی',
             onPressed: _showAddManualDialog,
@@ -6230,6 +6795,38 @@ class _BarcodeScannerScreenState extends State<BarcodeScannerScreen> {
 
 // ==================== مدل‌های داده ====================
 
+class TrashItem {
+  final String id;
+  final String type;
+  final String title;
+  final int deletedAt;
+  final Map<String, dynamic> data;
+
+  TrashItem({
+    required this.id,
+    required this.type,
+    required this.title,
+    required this.deletedAt,
+    required this.data,
+  });
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'type': type,
+        'title': title,
+        'deletedAt': deletedAt,
+        'data': data,
+      };
+
+  factory TrashItem.fromJson(Map<String, dynamic> json) => TrashItem(
+        id: json['id']?.toString() ?? '',
+        type: json['type']?.toString() ?? '',
+        title: json['title']?.toString() ?? 'مورد حذف‌شده',
+        deletedAt: json['deletedAt'] ?? 0,
+        data: Map<String, dynamic>.from(json['data'] ?? {}),
+      );
+}
+
 class ProductDatabaseItem {
   final String barcode;
   final String name;
@@ -6380,6 +6977,21 @@ class SalesInvoice {
     required this.date,
     required this.createdAt,
   });
+
+  SalesInvoice copyWith({int? number}) => SalesInvoice(
+        id: id,
+        number: number ?? this.number,
+        productName: productName,
+        barcode: barcode,
+        price: price,
+        quantity: quantity,
+        totalPrice: totalPrice,
+        customerName: customerName,
+        customerPhone: customerPhone,
+        isCredit: isCredit,
+        date: date,
+        createdAt: createdAt,
+      );
 
   Map<String, dynamic> toJson() => {
         'id': id,
