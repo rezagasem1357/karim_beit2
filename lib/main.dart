@@ -218,7 +218,7 @@ class _DeliveryAppState extends State<DeliveryApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'حسابداری فروشگاه + بارنامه',
+      title: 'دستیار هوشمند فروشگاه',
       theme: ThemeData(
         primarySwatch: Colors.green,
         useMaterial3: true,
@@ -692,6 +692,119 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
           RegExp(r'(\d)(?=(\d{3})+(?!\d))'),
           (match) => '${match[1]},',
         );
+  }
+
+  int _getTotalProductStock() {
+    return _productDatabase.fold<int>(0, (sum, product) => sum + product.stock);
+  }
+
+  int _getTodaySalesTotal() {
+    final today = _todayJalali();
+    return _salesInvoices
+        .where((invoice) => invoice.date == today)
+        .fold<int>(0, (sum, invoice) => sum + invoice.totalPrice);
+  }
+
+  Widget _buildLiveStats() {
+    final itemCount = _productDatabase.length;
+    final totalStock = _getTotalProductStock();
+    final todaySales = _getTodaySalesTotal();
+
+    Widget stat({required String title, required String value}) {
+      return Expanded(
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 3),
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 9),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surface,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: Theme.of(context).colorScheme.outlineVariant,
+            ),
+          ),
+          child: Column(
+            children: [
+              Text(
+                title,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Colors.red,
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 5),
+              Text(
+                value,
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  color: Colors.black,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      margin: const EdgeInsets.only(top: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 7),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Row(
+        children: [
+          stat(title: 'تعداد اقلام', value: _toPersianDigits(itemCount.toString())),
+          stat(title: 'کل موجودی کالا', value: _toPersianDigits(totalStock.toString())),
+          stat(
+            title: 'فروش امروز',
+            value: '${_formatPrice(todaySales)} ریال',
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _contactSupport() async {
+    _closeKeyboard();
+    final subject = Uri.encodeComponent('ارتباط با پشتیبانی دستیار هوشمند فروشگاه');
+    final body = Uri.encodeComponent(
+      'سلام،\n\nپیام من درباره برنامه دستیار هوشمند فروشگاه:\n\n',
+    );
+
+    final gmailUri = Uri.parse(
+      'googlegmail://co?to=rezagasem.82@gmail.com&subject=$subject&body=$body',
+    );
+    final mailtoUri = Uri(
+      scheme: 'mailto',
+      path: 'rezagasem.82@gmail.com',
+      queryParameters: {
+        'subject': 'ارتباط با پشتیبانی دستیار هوشمند فروشگاه',
+        'body': 'سلام،\n\nپیام من درباره برنامه دستیار هوشمند فروشگاه:\n\n',
+      },
+    );
+
+    try {
+      if (await canLaunchUrl(gmailUri)) {
+        await launchUrl(gmailUri, mode: LaunchMode.externalApplication);
+      } else if (await canLaunchUrl(mailtoUri)) {
+        await launchUrl(mailtoUri, mode: LaunchMode.externalApplication);
+      } else {
+        _showSuccessMessage('برنامه ایمیل روی دستگاه پیدا نشد');
+      }
+    } catch (_) {
+      try {
+        await launchUrl(mailtoUri, mode: LaunchMode.externalApplication);
+      } catch (_) {
+        _showSuccessMessage('❌ خطا در باز کردن Gmail');
+      }
+    }
   }
 
   int _getNextManifestNumber() {
@@ -1800,44 +1913,72 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
     try {
       if (item.type == 'invoice') {
         final raw = item.data['invoices'];
-        final invoices = (raw as List)
+        if (raw is! List) return false;
+
+        final invoices = raw
             .map((e) => SalesInvoice.fromJson(Map<String, dynamic>.from(e)))
             .toList();
         if (invoices.isEmpty) return false;
+
+        // هر فاکتور با شناسه (id) خودش یکتا است؛ شماره فاکتور معیار تشخیص
+        // «فاکتور مشابه» نیست. فقط اگر خود همان id قبلاً وجود داشته باشد
+        // بازیابی متوقف می‌شود.
+        final activeIds = _salesInvoices.map((x) => x.id).toSet();
+        if (invoices.any((inv) => activeIds.contains(inv.id))) {
+          return false;
+        }
+
+        // حذف فاکتور قبلاً موجودی را برگردانده است. هنگام بازیابی همان مقدار
+        // دوباره از موجودی کم می‌شود؛ اگر موجودی در این فاصله مصرف شده باشد،
+        // بازیابی فقط در صورت کافی بودن موجودی انجام می‌شود.
+        final requiredByBarcode = <String, int>{};
         for (final inv in invoices) {
-          final idx =
-              _productDatabase.indexWhere((p) => p.barcode == inv.barcode);
-          if (idx == -1 || _productDatabase[idx].stock < inv.quantity) {
+          requiredByBarcode[inv.barcode] =
+              (requiredByBarcode[inv.barcode] ?? 0) + inv.quantity;
+        }
+        for (final entry in requiredByBarcode.entries) {
+          final idx = _productDatabase.indexWhere((p) => p.barcode == entry.key);
+          if (idx == -1 || _productDatabase[idx].stock < entry.value) {
             return false;
           }
         }
-        var number = invoices.first.number;
-        final conflict = _salesInvoices.any((x) => x.number == number);
-        if (conflict) number = _getNextInvoiceNumber();
+
+        final originalNumber = invoices.first.number;
+        final numberConflict = _salesInvoices.any(
+          (x) => x.number == originalNumber && !activeIds.contains(x.id),
+        );
+        final restoreNumber = numberConflict
+            ? _getNextInvoiceNumber()
+            : originalNumber;
+
         for (final inv in invoices) {
-          final restored =
-              number == inv.number ? inv : inv.copyWith(number: number);
+          final restored = inv.number == restoreNumber
+              ? inv
+              : inv.copyWith(number: restoreNumber);
           _salesInvoices.add(restored);
-          final idx =
-              _productDatabase.indexWhere((p) => p.barcode == inv.barcode);
-          if (idx != -1) {
-            final p = _productDatabase[idx];
-            _productDatabase[idx] = ProductDatabaseItem(
-              barcode: p.barcode,
-              name: p.name,
-              stock: (p.stock - inv.quantity).clamp(0, 1 << 30).toInt(),
-              buyPrice: p.buyPrice,
-              sellPrice: p.sellPrice,
-              folder: p.folder,
-            );
-          }
         }
+
+        for (final entry in requiredByBarcode.entries) {
+          final idx = _productDatabase.indexWhere((p) => p.barcode == entry.key);
+          if (idx == -1) continue;
+          final p = _productDatabase[idx];
+          _productDatabase[idx] = ProductDatabaseItem(
+            barcode: p.barcode,
+            name: p.name,
+            stock: (p.stock - entry.value).clamp(0, 1 << 30).toInt(),
+            buyPrice: p.buyPrice,
+            sellPrice: p.sellPrice,
+            folder: p.folder,
+          );
+        }
+
         await _saveSalesInvoices();
         await _saveProductDatabase();
       } else if (item.type == 'product') {
         final product = ProductDatabaseItem.fromJson(item.data);
-        if (_productDatabase.any((p) => p.barcode == product.barcode))
+        if (_productDatabase.any((p) => p.barcode == product.barcode)) {
           return false;
+        }
         _productDatabase.add(product);
         await _saveProductDatabase();
       } else if (item.type == 'manifest') {
@@ -1845,15 +1986,18 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
         if (_savedManifests.any((m) => m.id == manifest.id)) return false;
         _savedManifests.add(manifest);
         final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('delivery_manifests',
-            jsonEncode(_savedManifests.map((m) => m.toJson()).toList()));
+        await prefs.setString(
+          'delivery_manifests',
+          jsonEncode(_savedManifests.map((m) => m.toJson()).toList()),
+        );
       } else if (item.type == 'manifest_item') {
         final manifestId = item.data['manifestId']?.toString();
         final manifestIndex =
             _savedManifests.indexWhere((m) => m.id == manifestId);
         if (manifestIndex == -1) return false;
         final deliveryItem = DeliveryItem.fromJson(
-            Map<String, dynamic>.from(item.data['item'] ?? {}));
+          Map<String, dynamic>.from(item.data['item'] ?? {}),
+        );
         final manifest = _savedManifests[manifestIndex];
         if (manifest.items.any((x) =>
             x.barcode == deliveryItem.barcode &&
@@ -3626,7 +3770,10 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
               ),
             ),
 
-            const SizedBox(height: 16),
+            // ==================== آمار لحظه‌ای ====================
+            _buildLiveStats(),
+
+            const SizedBox(height: 10),
 
             // ==================== جستجو با FocusNode ====================
             Row(
@@ -4060,19 +4207,13 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
           title: Text(
             _isViewingManifest
                 ? 'بارنامه شماره ${_viewingManifest!.number}'
-                : 'حسابداری فروشگاه + بارنامه',
+                : 'دستیار هوشمند فروشگاه',
             style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
           ),
           elevation: 0,
           backgroundColor: Colors.green.shade700,
           foregroundColor: Colors.white,
           actions: [
-            if (!_isViewingManifest)
-              IconButton(
-                icon: const Icon(Icons.delete_sweep_outlined),
-                tooltip: 'سطل زباله',
-                onPressed: _openTrashScreen,
-              ),
             if (!_isViewingManifest)
               IconButton(
                 icon: const Icon(Icons.settings_outlined),
@@ -4110,9 +4251,17 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
         ),
         endDrawer: Drawer(
           width: MediaQuery.of(context).size.width * .82,
-          child: SafeArea(
-            child: Column(
-              children: [
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onHorizontalDragEnd: (details) {
+              final velocity = details.primaryVelocity ?? 0;
+              if (velocity > 250) {
+                Navigator.of(context).pop();
+              }
+            },
+            child: SafeArea(
+              child: Column(
+                children: [
                 Container(
                   width: double.infinity,
                   padding: const EdgeInsets.fromLTRB(20, 28, 20, 22),
@@ -4175,6 +4324,42 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                     });
                   },
                 ),
+                ListTile(
+                  leading: const Icon(Icons.delete_sweep_outlined),
+                  title: const Text('سطل زباله'),
+                  subtitle: const Text('بازیابی یا حذف دائمی موارد'),
+                  trailing: const Icon(Icons.chevron_left),
+                  onTap: () {
+                    Navigator.pop(context);
+                    Future.delayed(const Duration(milliseconds: 220), () {
+                      if (mounted) _openTrashScreen();
+                    });
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.share_outlined),
+                  title: const Text('اشتراک‌گذاری گزارش'),
+                  subtitle: const Text('ارسال گزارش PDF فروش'),
+                  trailing: const Icon(Icons.chevron_left),
+                  onTap: () {
+                    Navigator.pop(context);
+                    Future.delayed(const Duration(milliseconds: 220), () {
+                      if (mounted) _shareSalesReport();
+                    });
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.support_agent_outlined),
+                  title: const Text('ارتباط با پشتیبانی'),
+                  subtitle: const Text('ارسال پیام از طریق Gmail'),
+                  trailing: const Icon(Icons.chevron_left),
+                  onTap: () {
+                    Navigator.pop(context);
+                    Future.delayed(const Duration(milliseconds: 220), () {
+                      if (mounted) _contactSupport();
+                    });
+                  },
+                ),
                 const Divider(),
                 const Spacer(),
                 const Padding(
@@ -4182,7 +4367,8 @@ class _DeliveryScreenState extends State<DeliveryScreen> {
                   child: Text('توسعه‌دهنده: رضا قاسمی',
                       style: TextStyle(color: Colors.grey)),
                 ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
@@ -5701,8 +5887,10 @@ class _TrashScreenState extends State<TrashScreen> {
           .showSnackBar(SnackBar(content: Text('${item.title} بازیابی شد ✅')));
     } else {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-          content: Text(
-              'بازیابی انجام نشد؛ احتمالاً مورد مشابه در اطلاعات فعلی وجود دارد.')));
+        content: Text(
+          'بازیابی انجام نشد؛ ممکن است شناسه فاکتور تکراری باشد یا موجودی کافی نباشد.',
+        ),
+      ));
     }
   }
 
