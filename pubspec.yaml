@@ -50,15 +50,15 @@ dev_dependencies:
 flutter_launcher_icons:
   android: "launcher_icon"
   ios: true
-  image_path: "assets/icon/app_icon.png"
+  image_path: "assets/icon/icon.png"
 
 flutter:
   uses-material-design: true
   
   # Assets for images
   assets:
-  - assets/images/
-  - assets/icon/
+    - assets/images/
+    - assets/icon/
   
   # Fonts for Persian text
   fonts:
